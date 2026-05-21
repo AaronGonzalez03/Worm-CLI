@@ -33,14 +33,11 @@ This project exists to make worm behavior **tangible and observable** without re
 
 ## Demo
 
-> **Screenshots and a demo GIF will be added here.**
-> Run `python3 main.py` to see the interface live.
+<div align="center">
+  <img src="demo.gif" alt="Worm-CLI demo" width="900">
+</div>
 
-<!-- PLACEHOLDER: Replace with an actual terminal screenshot or GIF recording -->
-<!-- Recommended tool: `ttyrec` + `ttygif`, or `asciinema` -->
-```
-  📸  [ Demo GIF — coming soon ]
-```
+> Run `python3 demo.py` to replay this scripted demo, or `python3 main.py` for the full interactive session.
 
 ---
 

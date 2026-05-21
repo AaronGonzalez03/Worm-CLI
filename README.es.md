@@ -33,14 +33,11 @@ Este proyecto existe para hacer el comportamiento de un gusano **tangible y obse
 
 ## Demo
 
-> **Las capturas de pantalla y el GIF de demostración se añadirán aquí.**
-> Ejecuta `python3 main.py` para ver la interfaz en vivo.
+<div align="center">
+  <img src="demo.gif" alt="Demo de Worm-CLI" width="900">
+</div>
 
-<!-- PLACEHOLDER: Sustituir por una captura de terminal real o grabación GIF -->
-<!-- Herramienta recomendada: `asciinema` o `ttyrec` + `ttygif` -->
-```
-  📸  [ GIF de demostración — próximamente ]
-```
+> Ejecuta `python3 demo.py` para reproducir esta demo guiada, o `python3 main.py` para la sesión interactiva completa.
 
 ---
 
