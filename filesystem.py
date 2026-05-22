@@ -42,6 +42,9 @@ class FileNode:
     children: dict[str, "FileNode"] = field(default_factory=dict)
     parent: "FileNode | None" = field(default=None, repr=False)
     is_encrypted: bool = False
+    owner: str = "usuario"
+    mode: str = "rw-r--r--"
+    suid: bool = False
 
 
 _SENSITIVE_FILES = {
@@ -139,6 +142,7 @@ class FileSystem:
         self.root = self._build_skeleton()
         self._seed_sensitive_files()
         self._fill_normal_files(self.root, depth=0)
+        self._seed_privesc_vulnerabilities()
 
     # --- Tree construction ---
 
@@ -175,16 +179,25 @@ class FileSystem:
 
         etc = mkd(root, "etc")
         mkd(etc, "nginx")
+        mkd(etc, "cron.d")
+        mkd(etc, "sudoers.d")
 
         var = mkd(root, "var")
         vlog = mkd(var, "log")
         mkd(vlog, "nginx")
 
-        mkd(root, "tmp")
+        tmp = mkd(root, "tmp")
+        tmp.mode = "rwxrwxrwx"
+        tmp.owner = "root"
 
         opt = mkd(root, "opt")
         app = mkd(opt, "app")
         mkd(app, "config")
+
+        usr = mkd(root, "usr")
+        mkd(usr, "bin")
+
+        proc = mkd(root, "proc")
 
         # random extra dirs
         self._expand_dir(usuario, depth=2)
@@ -192,11 +205,92 @@ class FileSystem:
         self._expand_dir(app, depth=2)
         self._expand_dir(root, depth=1)
 
-        # plant .aws/credentials placeholder dir so sensitive seeder can find it
-        _ = aws  # used via path resolution
+        _ = aws
         _ = ssh
+        _ = proc
 
         return root
+
+    def _seed_privesc_vulnerabilities(self) -> None:
+        def mkf(parent: FileNode, name: str, content: str,
+                owner: str = "root", mode: str = "rw-r--r--",
+                suid: bool = False, sensitive: bool = False) -> FileNode:
+            node = self._make_file(name, content, is_sensitive=sensitive)
+            node.owner = owner
+            node.mode = mode
+            node.suid = suid
+            if name not in parent.children:
+                self._attach(parent, node)
+            return node
+
+        # --- SUID binaries in /usr/bin ---
+        usr_bin = self.get_node("/usr/bin")
+        if usr_bin:
+            mkf(usr_bin, "python3.10",
+                "ELF 64-bit LSB executable, x86-64 [simulated]\n",
+                owner="root", mode="rwsr-xr-x", suid=True)
+            mkf(usr_bin, "find",
+                "ELF 64-bit LSB executable, x86-64 [simulated]\n",
+                owner="root", mode="rwsr-xr-x", suid=True)
+            mkf(usr_bin, "nmap",
+                "ELF 64-bit LSB executable, x86-64 [simulated]\n",
+                owner="root", mode="rwsr-xr-x", suid=True)
+            mkf(usr_bin, "vim.basic",
+                "ELF 64-bit LSB executable, x86-64 [simulated]\n",
+                owner="root", mode="rwsr-xr-x", suid=True)
+
+        # --- World-writable cron job executed as root ---
+        cron_d = self.get_node("/etc/cron.d")
+        if cron_d:
+            mkf(cron_d, "cleanup",
+                "#!/bin/bash\n# Cron ejecutado como root cada 5 minutos\n"
+                "*/5 * * * * root /etc/cron.d/cleanup\n"
+                "find /tmp -type f -mtime +1 -delete\n"
+                "find /var/log -name '*.gz' -delete\n",
+                owner="root", mode="rwxrwxrwx")
+
+        # --- World-writable backup script (called by cron) ---
+        opt_config = self.get_node("/opt/app/config")
+        if opt_config:
+            mkf(opt_config, "backup.sh",
+                "#!/bin/bash\n# Script de backup ejecutado por cron como root\n"
+                "tar -czf /tmp/backup.tar.gz /opt/app/\n"
+                "scp /tmp/backup.tar.gz backup@192.168.1.10:/backups/\n",
+                owner="root", mode="rwxrwxrwx")
+
+        # --- /etc/passwd world-writable (misconfiguration) ---
+        etc = self.get_node("/etc")
+        if etc:
+            mkf(etc, "passwd",
+                "root:x:0:0:root:/root:/bin/bash\n"
+                "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+                "usuario:x:1000:1000:Usuario,,,:/home/usuario:/bin/bash\n"
+                "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n",
+                owner="root", mode="rw-rw-rw-", sensitive=True)
+
+            # --- /etc/shadow world-readable (severe misconfiguration) ---
+            mkf(etc, "shadow",
+                "root:$6$saltrandom$FakeHashedPasswordHere.ABCDEF0123456789:19000:0:99999:7:::\n"
+                "usuario:$6$saltrandom$AnotherFakeHashHere.GHIJKL0123456789:19000:0:99999:7:::\n"
+                "www-data:!:19000::::::\n",
+                owner="root", mode="r--r--r--", sensitive=True)
+
+            # --- Sudoers misconfiguration: NOPASSWD on python ---
+            sudoers_d = self.get_node("/etc/sudoers.d")
+            if sudoers_d:
+                mkf(sudoers_d, "usuario",
+                    "# Sudoers entry — usuario can run python3 as root without password\n"
+                    "usuario ALL=(ALL) NOPASSWD: /usr/bin/python3.10\n",
+                    owner="root", mode="r--r-----", sensitive=True)
+
+        # --- Kernel version (simulated: vulnerable to DirtyCOW) ---
+        proc = self.get_node("/proc")
+        if proc:
+            mkf(proc, "version",
+                "Linux version 4.4.0-116-generic (buildd@lgw01-amd64-021) "
+                "(gcc version 5.4.0 20160609 (Ubuntu 5.4.0-6ubuntu1~16.04.9)) "
+                "#140-Ubuntu SMP Mon Feb 12 21:23:04 UTC 2018\n",
+                owner="root", mode="r--r--r--")
 
     def _expand_dir(self, node: FileNode, depth: int) -> None:
         if depth >= 5:

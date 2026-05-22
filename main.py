@@ -16,10 +16,10 @@ from rich.tree import Tree
 from rich import box
 
 from filesystem import FileSystem, FileNode
-from worm import WormEngine, WormState, CommandResult
+from worm import WormEngine, WormState, CommandResult, PrivescFinding
 
 
-_COMMANDS = ["ls", "cd", "scan", "replicate", "delete", "edit", "encrypt", "decrypt", "tree", "status", "help", "exit"]
+_COMMANDS = ["ls", "cd", "scan", "replicate", "delete", "edit", "encrypt", "decrypt", "privesc", "tree", "status", "help", "exit"]
 _PATH_COMMANDS = {"cd", "replicate", "delete", "edit", "encrypt", "decrypt"}
 
 BANNER = r"""
@@ -250,6 +250,58 @@ class RichRenderer:
             key = ""
         return key.strip()
 
+    def render_privesc_results(self, findings: list[PrivescFinding]) -> None:
+        _SEV_STYLE = {
+            "CRITICO": ("bold red",    "bold white on red",    "CRITICO"),
+            "ALTO":    ("bold yellow", "bold black on yellow", "ALTO   "),
+            "MEDIO":   ("bold cyan",   "bold black on cyan",   "MEDIO  "),
+            "INFO":    ("dim",         "dim",                  "INFO   "),
+        }
+        _SEV_ORDER = {"CRITICO": 0, "ALTO": 1, "MEDIO": 2, "INFO": 3}
+
+        if not findings:
+            self.console.print(Panel(
+                "[green]No se encontraron vectores de escalada de privilegios.[/green]",
+                title="[bold green]PRIVESC — SIN HALLAZGOS[/bold green]",
+                border_style="green",
+            ))
+            return
+
+        # Summary header
+        counts = {}
+        for f in findings:
+            counts[f.severity] = counts.get(f.severity, 0) + 1
+        summary_parts = []
+        for sev in ("CRITICO", "ALTO", "MEDIO", "INFO"):
+            if sev in counts:
+                style, _, label = _SEV_STYLE[sev]
+                summary_parts.append(f"[{style}]{label}: {counts[sev]}[/{style}]")
+        self.console.print(Panel(
+            "  ".join(summary_parts),
+            title="[bold red]PRIVILEGE ESCALATION SCAN[/bold red]",
+            border_style="red",
+        ))
+
+        # One panel per severity group
+        for sev in ("CRITICO", "ALTO", "MEDIO", "INFO"):
+            group = [f for f in findings if f.severity == sev]
+            if not group:
+                continue
+            style, badge_style, label = _SEV_STYLE[sev]
+            for i, finding in enumerate(group, 1):
+                body = (
+                    f"[bold]Tecnica:[/bold]  {finding.check}\n"
+                    f"[bold]Ruta:[/bold]     {finding.path}\n\n"
+                    f"{finding.detail}\n\n"
+                    f"[bold]Exploit hint:[/bold]\n"
+                    f"[bold bright_green]  {finding.exploit_hint}[/bold bright_green]"
+                )
+                self.console.print(Panel(
+                    body,
+                    title=f"[{badge_style}] {label} [/{badge_style}]  {finding.title}",
+                    border_style=style.replace("bold ", ""),
+                ))
+
     def render_help(self) -> None:
         t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
         t.add_column("Comando", style="bold yellow", width=22)
@@ -264,6 +316,7 @@ class RichRenderer:
             ("edit <archivo>", "Modifica el contenido de un archivo (pide permiso)"),
             ("encrypt <arch|dir>", "Encripta archivo(s) con claves 128-bit unicas. Acepta directorios y re-encripta"),
             ("decrypt <archivo>", "Desencripta un archivo — solicita la clave generada al encriptar"),
+            ("privesc",           "Escanea el sistema en busca de vectores de escalada de privilegios"),
             ("status", "Muestra el estado actual del gusano"),
             ("help", "Muestra esta ayuda"),
             ("exit", "Termina la simulacion"),
@@ -322,7 +375,8 @@ class WormShell:
             style=style,
             bottom_toolbar=HTML(
                 "<b>ls</b> | <b>cd</b> | <b>scan</b> | <b>replicate</b> | <b>delete</b> | "
-                "<b>edit</b> | <b>encrypt</b> | <b>decrypt</b> | <b>tree</b> | <b>status</b> | <b>help</b> | <b>exit</b>"
+                "<b>edit</b> | <b>encrypt</b> | <b>decrypt</b> | <b>privesc</b> | "
+                "<b>tree</b> | <b>status</b> | <b>help</b> | <b>exit</b>"
             ),
             complete_in_thread=True,
         )
@@ -477,6 +531,11 @@ class WormShell:
                 self.renderer.render_error(result.narration)
             else:
                 self.renderer.render_narration(result.narration)
+
+        elif cmd == "privesc":
+            result = self.engine.cmd_privesc()
+            self.renderer.render_privesc_results(result.data["findings"])
+            self.renderer.render_narration(result.narration)
 
         elif cmd == "help":
             self.renderer.render_help()

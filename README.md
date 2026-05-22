@@ -114,6 +114,7 @@ The worm spawns in `/home/usuario` on a randomly generated filesystem and immedi
 | `replicate <dir>` | Plant a symbolic copy of the worm in a target directory | **Yes** |
 | `encrypt <file\|dir>` | XOR-128 encrypt a file or every file in a directory. Each file gets a unique random key shown **once** and never stored. Supports re-encryption of already-encrypted files | **Yes** |
 | `decrypt <file>` | Restore an encrypted file — prompts for the 32-char key generated at encryption time | No |
+| `privesc` | Scan the fake filesystem for privilege escalation vectors: SUID binaries (GTFOBins-mapped), sudo NOPASSWD rules, writable cron jobs, writable sensitive files, readable `/etc/shadow`, exposed SSH keys, kernel CVEs, and PATH hijacking | No |
 | `help` | Show the command reference | No |
 | `exit` | End the simulation | No |
 

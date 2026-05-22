@@ -241,6 +241,12 @@ def main() -> None:
     renderer.render_tree(result.data["root"], engine.fs)
     renderer.render_narration(result.narration)
 
+    # --- privesc ---
+    prompt_line(engine.current_path(), "privesc", pause_before=0.8)
+    result = engine.cmd_privesc()
+    renderer.render_privesc_results(result.data["findings"])
+    renderer.render_narration(result.narration)
+
     # --- status ---
     prompt_line(engine.current_path(), "status")
     result = engine.cmd_status()

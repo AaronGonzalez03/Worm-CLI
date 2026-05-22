@@ -114,6 +114,7 @@ El gusano aparece en `/home/usuario` dentro del árbol generado aleatoriamente y
 | `replicate <dir>` | Planta una copia simbólica del gusano en un directorio destino | **Sí** |
 | `encrypt <arch\|dir>` | Cifrado XOR-128 de un archivo o de todos los archivos en un directorio. Clave única aleatoria por archivo, mostrada **una sola vez** y nunca almacenada. Soporta re-encriptación | **Sí** |
 | `decrypt <archivo>` | Restaura un archivo cifrado — solicita la clave de 32 caracteres generada al encriptar | No |
+| `privesc` | Analiza el filesystem falso en busca de vectores de escalada de privilegios: binarios SUID (mapeados a GTFOBins), reglas sudo NOPASSWD, cron jobs con escritura mundial, archivos sensibles modificables, `/etc/shadow` legible, claves SSH expuestas, CVEs de kernel y PATH hijacking | No |
 | `help` | Muestra la referencia de comandos | No |
 | `exit` | Termina la simulación | No |
 
