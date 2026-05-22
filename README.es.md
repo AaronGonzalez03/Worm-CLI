@@ -112,6 +112,8 @@ El gusano aparece en `/home/usuario` dentro del árbol generado aleatoriamente y
 | `delete <archivo>` | Elimina un nodo de archivo del filesystem falso | **Sí** |
 | `edit <archivo>` | Sobreescribe el contenido de un archivo (multilínea, termina con `FIN`) | **Sí** |
 | `replicate <dir>` | Planta una copia simbólica del gusano en un directorio destino | **Sí** |
+| `encrypt <arch\|dir>` | Cifrado XOR-128 de un archivo o de todos los archivos en un directorio. Clave única aleatoria por archivo, mostrada **una sola vez** y nunca almacenada. Soporta re-encriptación | **Sí** |
+| `decrypt <archivo>` | Restaura un archivo cifrado — solicita la clave de 32 caracteres generada al encriptar | No |
 | `help` | Muestra la referencia de comandos | No |
 | `exit` | Termina la simulación | No |
 

@@ -145,6 +145,83 @@ def main() -> None:
         run_result = engine.run_edit(target_file, "Este archivo ha sido comprometido.\n")
         renderer.render_narration(run_result.narration)
 
+    # --- encrypt single file ---
+    enc_target = None
+    for child in engine.state.current_node.children.values():
+        if not child.is_dir:
+            enc_target = child.name
+            break
+    if enc_target:
+        prompt_line(engine.current_path(), f"encrypt {enc_target}")
+        plan = engine.plan_encrypt(enc_target)
+        renderer.render_narration(plan.narration)
+        console.print(Panel(
+            f"[bold yellow]{plan.permission_prompt}[/bold yellow]",
+            title="[bold red]SOLICITUD DE PERMISO[/bold red]",
+            border_style="yellow",
+        ))
+        confirm_line("s")
+        enc_result = engine.run_encrypt(enc_target)
+        if enc_result.success and not enc_result.data.get("is_dir"):
+            renderer.render_encrypt_key(enc_result.data["name"], enc_result.data["key"])
+            saved_key = enc_result.data["key"]
+        else:
+            saved_key = None
+        renderer.render_narration(enc_result.narration)
+
+        # --- re-encrypt (double encryption) ---
+        time.sleep(0.4)
+        prompt_line(engine.current_path(), f"encrypt {enc_target}")
+        plan2 = engine.plan_encrypt(enc_target)
+        renderer.render_narration(plan2.narration)
+        console.print(Panel(
+            f"[bold yellow]{plan2.permission_prompt}[/bold yellow]",
+            title="[bold red]SOLICITUD DE PERMISO[/bold red]",
+            border_style="yellow",
+        ))
+        confirm_line("s")
+        enc_result2 = engine.run_encrypt(enc_target)
+        if enc_result2.success:
+            renderer.render_encrypt_key(enc_result2.data["name"], enc_result2.data["key"])
+            saved_key = enc_result2.data["key"]
+        renderer.render_narration(enc_result2.narration)
+
+        # --- decrypt ---
+        if saved_key:
+            time.sleep(0.4)
+            prompt_line(engine.current_path(), f"decrypt {enc_target}")
+            plan_d = engine.plan_decrypt(enc_target)
+            renderer.render_narration(plan_d.narration)
+            console.print(Panel(
+                f"Introduce la clave de 32 caracteres para desencriptar [bold yellow]{enc_target}[/bold yellow]:",
+                border_style="magenta",
+                title="[bold magenta]DESCIFRADO[/bold magenta]",
+            ))
+            time.sleep(0.5)
+            sys.stdout.write("  Clave: ")
+            sys.stdout.flush()
+            time.sleep(0.3)
+            slow_print(saved_key, delay=0.03)
+            time.sleep(0.2)
+            dec_result = engine.run_decrypt(enc_target, saved_key)
+            renderer.render_narration(dec_result.narration)
+
+    # --- encrypt directory ---
+    prompt_line(engine.current_path(), "encrypt Documentos")
+    engine.cmd_cd("/home/usuario")
+    plan_dir = engine.plan_encrypt("Documentos")
+    renderer.render_narration(plan_dir.narration)
+    console.print(Panel(
+        f"[bold yellow]{plan_dir.permission_prompt}[/bold yellow]",
+        title="[bold red]SOLICITUD DE PERMISO[/bold red]",
+        border_style="yellow",
+    ))
+    confirm_line("s")
+    dir_result = engine.run_encrypt("Documentos")
+    if dir_result.success:
+        renderer.render_encrypt_keys_dir(dir_result.data["entries"])
+    renderer.render_narration(dir_result.narration)
+
     # --- replicate /tmp ---
     prompt_line(engine.current_path(), "replicate /tmp")
     plan = engine.plan_replicate("/tmp")

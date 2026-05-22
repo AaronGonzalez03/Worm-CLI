@@ -225,6 +225,19 @@ class RichRenderer:
             border_style="red",
         ))
 
+    def render_encrypt_keys_dir(self, entries: list[dict]) -> None:
+        t = Table(box=box.SIMPLE, show_header=True, header_style="bold red")
+        t.add_column("Archivo", style="bold yellow")
+        t.add_column("Clave (32 chars)", style="bold bright_green")
+        for e in entries:
+            t.add_row(e["path"], e["key"])
+        self.console.print(Panel(
+            "[bold white on red]  ATENCION: COPIA TODAS LAS CLAVES — NO SE ALMACENAN  [/bold white on red]\n",
+            title=f"[bold red]RANSOMWARE — {len(entries)} CLAVES DE DESCIFRADO[/bold red]",
+            border_style="red",
+        ))
+        self.console.print(t)
+
     def render_key_input_prompt(self, file_name: str) -> str:
         self.console.print(Panel(
             f"Introduce la clave de 32 caracteres para desencriptar [bold yellow]{file_name}[/bold yellow]:",
@@ -249,7 +262,7 @@ class RichRenderer:
             ("replicate <dir>", "Planta una copia del gusano en un directorio (pide permiso)"),
             ("delete <archivo>", "Elimina un archivo del sistema simulado (pide permiso)"),
             ("edit <archivo>", "Modifica el contenido de un archivo (pide permiso)"),
-            ("encrypt <archivo>", "Encripta un archivo con clave aleatoria de 128 bits (pide permiso)"),
+            ("encrypt <arch|dir>", "Encripta archivo(s) con claves 128-bit unicas. Acepta directorios y re-encripta"),
             ("decrypt <archivo>", "Desencripta un archivo — solicita la clave generada al encriptar"),
             ("status", "Muestra el estado actual del gusano"),
             ("help", "Muestra esta ayuda"),
@@ -426,20 +439,26 @@ class WormShell:
 
         elif cmd == "encrypt":
             if not args:
-                self.renderer.render_error("Uso: encrypt <nombre_archivo>")
+                self.renderer.render_error("Uso: encrypt <archivo_o_directorio>")
                 return
             plan = self.engine.plan_encrypt(args[0])
             self.renderer.render_narration(plan.narration)
             if not plan.success:
                 return
+            if plan.data.get("is_dir") and plan.data.get("pending", 0) == 0:
+                self.renderer.render_narration("No hay archivos pendientes de encriptar en ese directorio.")
+                return
             answer = self.renderer.render_permission_prompt(plan.permission_prompt)
             if answer.lower() in ("s", "si", "sí", "y", "yes"):
                 result = self.engine.run_encrypt(args[0])
                 if result.success:
-                    self.renderer.render_encrypt_key(result.data["name"], result.data["key"])
+                    if result.data.get("is_dir"):
+                        self.renderer.render_encrypt_keys_dir(result.data["entries"])
+                    else:
+                        self.renderer.render_encrypt_key(result.data["name"], result.data["key"])
                 self.renderer.render_narration(result.narration)
             else:
-                self.renderer.render_narration("Encriptacion cancelada. El archivo permanece intacto.")
+                self.renderer.render_narration("Encriptacion cancelada. Los archivos permanecen intactos.")
 
         elif cmd == "decrypt":
             if not args:

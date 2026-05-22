@@ -278,37 +278,76 @@ class WormEngine:
                                  narration=f"No encuentro '{name}' en el directorio actual.",
                                  action_tag="encrypt")
         if node.is_dir:
-            return CommandResult(success=False, data={},
-                                 narration=f"'{name}' es un directorio. Solo puedo encriptar archivos.",
-                                 action_tag="encrypt")
-        if node.is_encrypted:
-            return CommandResult(success=False, data={},
-                                 narration=f"'{name}' ya esta encriptado. Usa 'decrypt' con la clave original.",
-                                 action_tag="encrypt")
+            files = self._collect_files(node)
+            already = sum(1 for f in files if f.is_encrypted)
+            pending = len(files) - already
+            narr = (
+                f"Directorio '{name}' contiene {len(files)} archivo(s) "
+                f"({already} ya encriptados, {pending} pendientes). "
+                f"Voy a encriptar cada archivo con una clave unica de 128 bits. "
+                f"Cada clave se mostrara UNA SOLA VEZ — no hay forma de recuperarlas despues."
+            )
+            return CommandResult(
+                success=True,
+                data={"name": name, "node": node, "is_dir": True, "pending": pending},
+                narration=narr,
+                needs_permission=True,
+                permission_prompt=f"Encriptar {pending} archivo(s) en '{name}' con claves individuales? [s/n]",
+                action_tag="encrypt",
+            )
         sensitive_label = " [SENSIBLE]" if node.is_sensitive else ""
+        already_enc = " [YA ENCRIPTADO — se re-encriptara]" if node.is_encrypted else ""
         narr = (
-            f"Tengo en la mira '{name}'{sensitive_label} ({node.size} bytes). "
+            f"Tengo en la mira '{name}'{sensitive_label}{already_enc} ({node.size} bytes). "
             f"Voy a encriptar su contenido con una clave de 128 bits generada aleatoriamente. "
             f"La clave se mostrara UNA SOLA VEZ — si la pierdes, el archivo no puede recuperarse."
         )
         return CommandResult(
             success=True,
-            data={"name": name, "node": node},
+            data={"name": name, "node": node, "is_dir": False},
             narration=narr,
             needs_permission=True,
-            permission_prompt=f"Encriptar '{name}'{sensitive_label}? La clave solo se muestra una vez. [s/n]",
+            permission_prompt=f"Encriptar '{name}'{sensitive_label}{already_enc}? La clave solo se muestra una vez. [s/n]",
             action_tag="encrypt",
         )
 
-    def run_encrypt(self, name: str) -> CommandResult:
-        node = self._resolve(name)
-        if node is None or node.is_dir or node.is_encrypted:
-            return CommandResult(success=False, data={},
-                                 narration="Archivo no encontrado o ya encriptado.", action_tag="encrypt")
+    def _collect_files(self, node: FileNode) -> list[FileNode]:
+        result: list[FileNode] = []
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n.is_dir:
+                stack.extend(n.children.values())
+            else:
+                result.append(n)
+        return result
+
+    def _encrypt_single(self, node: FileNode) -> str:
         key = generate_key()
         node.content = encrypt_content(node.content, key)
         node.is_encrypted = True
         node.size = len(node.content.encode())
+        return key
+
+    def run_encrypt(self, name: str) -> CommandResult:
+        node = self._resolve(name)
+        if node is None:
+            return CommandResult(success=False, data={},
+                                 narration="Archivo o directorio no encontrado.", action_tag="encrypt")
+        if node.is_dir:
+            files = self._collect_files(node)
+            encrypted_entries: list[dict] = []
+            for f in files:
+                key = self._encrypt_single(f)
+                encrypted_entries.append({"name": f.name, "path": self.fs.get_path(f), "key": key})
+            narr = (
+                f"Directorio '{name}' procesado: {len(encrypted_entries)} archivo(s) encriptados. "
+                f"Cada archivo tiene una clave unica — se muestran a continuacion."
+            )
+            return CommandResult(success=True,
+                                 data={"name": name, "entries": encrypted_entries, "is_dir": True},
+                                 narration=narr, action_tag="encrypt")
+        key = self._encrypt_single(node)
         path = self.fs.get_path(node)
         narr = (
             f"Archivo '{name}' encriptado exitosamente. "
@@ -317,7 +356,7 @@ class WormEngine:
         )
         return CommandResult(
             success=True,
-            data={"name": name, "path": path, "key": key},
+            data={"name": name, "path": path, "key": key, "is_dir": False},
             narration=narr,
             action_tag="encrypt",
         )

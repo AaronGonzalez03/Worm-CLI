@@ -112,6 +112,8 @@ The worm spawns in `/home/usuario` on a randomly generated filesystem and immedi
 | `delete <file>` | Remove a file node from the fake filesystem | **Yes** |
 | `edit <file>` | Overwrite a file's content (multiline, ends with `FIN`) | **Yes** |
 | `replicate <dir>` | Plant a symbolic copy of the worm in a target directory | **Yes** |
+| `encrypt <file\|dir>` | XOR-128 encrypt a file or every file in a directory. Each file gets a unique random key shown **once** and never stored. Supports re-encryption of already-encrypted files | **Yes** |
+| `decrypt <file>` | Restore an encrypted file — prompts for the 32-char key generated at encryption time | No |
 | `help` | Show the command reference | No |
 | `exit` | End the simulation | No |
 
