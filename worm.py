@@ -1,7 +1,7 @@
 from __future__ import annotations
 import time
 from dataclasses import dataclass, field
-from filesystem import FileSystem, FileNode
+from filesystem import FileSystem, FileNode, encrypt_content, decrypt_content, generate_key
 
 
 @dataclass
@@ -268,3 +268,95 @@ class WormEngine:
             f"Mi propagacion continua."
         )
         return CommandResult(success=True, data={"dest_path": dest_path}, narration=narr, action_tag="replicate")
+
+    # --- Encrypt / Decrypt ---
+
+    def plan_encrypt(self, name: str) -> CommandResult:
+        node = self._resolve(name)
+        if node is None:
+            return CommandResult(success=False, data={},
+                                 narration=f"No encuentro '{name}' en el directorio actual.",
+                                 action_tag="encrypt")
+        if node.is_dir:
+            return CommandResult(success=False, data={},
+                                 narration=f"'{name}' es un directorio. Solo puedo encriptar archivos.",
+                                 action_tag="encrypt")
+        if node.is_encrypted:
+            return CommandResult(success=False, data={},
+                                 narration=f"'{name}' ya esta encriptado. Usa 'decrypt' con la clave original.",
+                                 action_tag="encrypt")
+        sensitive_label = " [SENSIBLE]" if node.is_sensitive else ""
+        narr = (
+            f"Tengo en la mira '{name}'{sensitive_label} ({node.size} bytes). "
+            f"Voy a encriptar su contenido con una clave de 128 bits generada aleatoriamente. "
+            f"La clave se mostrara UNA SOLA VEZ — si la pierdes, el archivo no puede recuperarse."
+        )
+        return CommandResult(
+            success=True,
+            data={"name": name, "node": node},
+            narration=narr,
+            needs_permission=True,
+            permission_prompt=f"Encriptar '{name}'{sensitive_label}? La clave solo se muestra una vez. [s/n]",
+            action_tag="encrypt",
+        )
+
+    def run_encrypt(self, name: str) -> CommandResult:
+        node = self._resolve(name)
+        if node is None or node.is_dir or node.is_encrypted:
+            return CommandResult(success=False, data={},
+                                 narration="Archivo no encontrado o ya encriptado.", action_tag="encrypt")
+        key = generate_key()
+        node.content = encrypt_content(node.content, key)
+        node.is_encrypted = True
+        node.size = len(node.content.encode())
+        path = self.fs.get_path(node)
+        narr = (
+            f"Archivo '{name}' encriptado exitosamente. "
+            f"Contenido reemplazado por {node.size} bytes de datos cifrados. "
+            f"Sin la clave correcta, el contenido es irrecuperable."
+        )
+        return CommandResult(
+            success=True,
+            data={"name": name, "path": path, "key": key},
+            narration=narr,
+            action_tag="encrypt",
+        )
+
+    def plan_decrypt(self, name: str) -> CommandResult:
+        node = self._resolve(name)
+        if node is None:
+            return CommandResult(success=False, data={},
+                                 narration=f"No encuentro '{name}' en el directorio actual.",
+                                 action_tag="decrypt")
+        if node.is_dir:
+            return CommandResult(success=False, data={},
+                                 narration=f"'{name}' es un directorio.", action_tag="decrypt")
+        if not node.is_encrypted:
+            return CommandResult(success=False, data={},
+                                 narration=f"'{name}' no esta encriptado.", action_tag="decrypt")
+        narr = (
+            f"'{name}' esta encriptado. Para restaurar su contenido necesito la clave de 32 caracteres "
+            f"que se genero en el momento de la encriptacion. Introduce la clave cuando se te solicite."
+        )
+        return CommandResult(success=True, data={"name": name, "node": node},
+                             narration=narr, action_tag="decrypt")
+
+    def run_decrypt(self, name: str, key: str) -> CommandResult:
+        node = self._resolve(name)
+        if node is None or node.is_dir or not node.is_encrypted:
+            return CommandResult(success=False, data={},
+                                 narration="Archivo no encontrado o no esta encriptado.", action_tag="decrypt")
+        success, result = decrypt_content(node.content, key)
+        if not success:
+            return CommandResult(success=False, data={},
+                                 narration=f"Desencriptado fallido: {result}", action_tag="decrypt")
+        node.content = result
+        node.is_encrypted = False
+        node.size = len(result.encode())
+        path = self.fs.get_path(node)
+        narr = (
+            f"Archivo '{name}' desencriptado correctamente. "
+            f"Contenido restaurado: {node.size} bytes legibles."
+        )
+        return CommandResult(success=True, data={"name": name, "path": path},
+                             narration=narr, action_tag="decrypt")

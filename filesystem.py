@@ -1,7 +1,35 @@
 from __future__ import annotations
+import base64
 import random
+import secrets
 import time
 from dataclasses import dataclass, field
+
+_MAGIC_PREFIX = "WORMENC1:"
+
+
+def encrypt_content(content: str, key: str) -> str:
+    key_bytes = key.encode()
+    plain = (_MAGIC_PREFIX + content).encode()
+    cipher = bytes(b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(plain))
+    return base64.b64encode(cipher).decode()
+
+
+def decrypt_content(encrypted_b64: str, key: str) -> tuple[bool, str]:
+    try:
+        key_bytes = key.encode()
+        cipher = base64.b64decode(encrypted_b64)
+        plain = bytes(b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(cipher))
+        result = plain.decode()
+        if result.startswith(_MAGIC_PREFIX):
+            return True, result[len(_MAGIC_PREFIX):]
+        return False, "Clave incorrecta — el archivo permanece encriptado."
+    except Exception:
+        return False, "Error al desencriptar — clave invalida o datos corruptos."
+
+
+def generate_key() -> str:
+    return secrets.token_hex(16)
 
 
 @dataclass
@@ -13,6 +41,7 @@ class FileNode:
     content: str
     children: dict[str, "FileNode"] = field(default_factory=dict)
     parent: "FileNode | None" = field(default=None, repr=False)
+    is_encrypted: bool = False
 
 
 _SENSITIVE_FILES = {

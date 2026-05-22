@@ -19,8 +19,8 @@ from filesystem import FileSystem, FileNode
 from worm import WormEngine, WormState, CommandResult
 
 
-_COMMANDS = ["ls", "cd", "scan", "replicate", "delete", "edit", "tree", "status", "help", "exit"]
-_PATH_COMMANDS = {"cd", "replicate", "delete", "edit"}
+_COMMANDS = ["ls", "cd", "scan", "replicate", "delete", "edit", "encrypt", "decrypt", "tree", "status", "help", "exit"]
+_PATH_COMMANDS = {"cd", "replicate", "delete", "edit", "encrypt", "decrypt"}
 
 BANNER = r"""
  ██████╗ ██╗   ██╗███████╗ █████╗ ███╗   ██╗ ██████╗
@@ -127,21 +127,27 @@ class RichRenderer:
         t.add_column("Tipo", width=6)
         t.add_column("Nombre")
         t.add_column("Tamano", justify="right", width=10)
-        t.add_column("Sensible", width=9)
+        t.add_column("Estado", width=12)
 
         for node in nodes:
             tipo = "[bold blue]DIR [/bold blue]" if node.is_dir else "FILE"
-            if node.is_sensitive:
-                nombre = f"[bold red]{node.name}[/bold red]"
-                sensible = "[bold red]SI[/bold red]"
-            elif node.is_dir:
+            if node.is_dir:
                 nombre = f"[bold blue]{node.name}/[/bold blue]"
-                sensible = "-"
+                estado = "-"
+            elif node.is_encrypted and node.is_sensitive:
+                nombre = f"[bold magenta]{node.name}[/bold magenta]"
+                estado = "[bold magenta]ENC+SENS[/bold magenta]"
+            elif node.is_encrypted:
+                nombre = f"[bold magenta]{node.name}[/bold magenta]"
+                estado = "[bold magenta]ENCRIPTADO[/bold magenta]"
+            elif node.is_sensitive:
+                nombre = f"[bold red]{node.name}[/bold red]"
+                estado = "[bold red]SENSIBLE[/bold red]"
             else:
                 nombre = node.name
-                sensible = "-"
+                estado = "-"
             size_str = "-" if node.is_dir else f"{node.size}B"
-            t.add_row(tipo, nombre, size_str, sensible)
+            t.add_row(tipo, nombre, size_str, estado)
 
         self.console.print(Panel(t, title=f"[cyan]{path}[/cyan]", border_style="cyan"))
 
@@ -156,10 +162,14 @@ class RichRenderer:
         if depth >= max_depth:
             return
         for child in sorted(node.children.values(), key=lambda n: (not n.is_dir, n.name)):
-            if child.is_sensitive:
-                label = f"[bold red]{child.name}[/bold red]"
-            elif child.is_dir:
+            if child.is_dir:
                 label = f"[bold blue]{child.name}/[/bold blue]"
+            elif child.is_encrypted and child.is_sensitive:
+                label = f"[bold magenta]{child.name} [ENC+SENS][/bold magenta]"
+            elif child.is_encrypted:
+                label = f"[bold magenta]{child.name} [ENC][/bold magenta]"
+            elif child.is_sensitive:
+                label = f"[bold red]{child.name}[/bold red]"
             else:
                 label = child.name
             branch = parent_tree.add(label)
@@ -204,6 +214,29 @@ class RichRenderer:
 
         self.console.print(Panel(t, title="[bold yellow]ESTADO DEL GUSANO[/bold yellow]", border_style="yellow"))
 
+    def render_encrypt_key(self, file_name: str, key: str) -> None:
+        self.console.print(Panel(
+            f"[bold white on red]  ATENCION: COPIA ESTA CLAVE AHORA — NO SE ALMACENA  [/bold white on red]\n\n"
+            f"  Archivo encriptado: [bold yellow]{file_name}[/bold yellow]\n\n"
+            f"  Clave de descifrado:\n\n"
+            f"  [bold bright_white on dark_green]  {key}  [/bold bright_white on dark_green]\n\n"
+            f"  [dim]Para recuperar el archivo: decrypt {file_name}  →  introduce esta clave[/dim]",
+            title="[bold red]RANSOMWARE — CLAVE DE DESCIFRADO[/bold red]",
+            border_style="red",
+        ))
+
+    def render_key_input_prompt(self, file_name: str) -> str:
+        self.console.print(Panel(
+            f"Introduce la clave de 32 caracteres para desencriptar [bold yellow]{file_name}[/bold yellow]:",
+            border_style="magenta",
+            title="[bold magenta]DESCIFRADO[/bold magenta]",
+        ))
+        try:
+            key = pt_prompt("  Clave: ")
+        except (KeyboardInterrupt, EOFError):
+            key = ""
+        return key.strip()
+
     def render_help(self) -> None:
         t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
         t.add_column("Comando", style="bold yellow", width=22)
@@ -216,6 +249,8 @@ class RichRenderer:
             ("replicate <dir>", "Planta una copia del gusano en un directorio (pide permiso)"),
             ("delete <archivo>", "Elimina un archivo del sistema simulado (pide permiso)"),
             ("edit <archivo>", "Modifica el contenido de un archivo (pide permiso)"),
+            ("encrypt <archivo>", "Encripta un archivo con clave aleatoria de 128 bits (pide permiso)"),
+            ("decrypt <archivo>", "Desencripta un archivo — solicita la clave generada al encriptar"),
             ("status", "Muestra el estado actual del gusano"),
             ("help", "Muestra esta ayuda"),
             ("exit", "Termina la simulacion"),
@@ -273,8 +308,8 @@ class WormShell:
             history=InMemoryHistory(),
             style=style,
             bottom_toolbar=HTML(
-                "<b>ls</b> | <b>cd</b> | <b>scan</b> | <b>replicate</b> | "
-                "<b>delete</b> | <b>edit</b> | <b>tree</b> | <b>status</b> | <b>help</b> | <b>exit</b>"
+                "<b>ls</b> | <b>cd</b> | <b>scan</b> | <b>replicate</b> | <b>delete</b> | "
+                "<b>edit</b> | <b>encrypt</b> | <b>decrypt</b> | <b>tree</b> | <b>status</b> | <b>help</b> | <b>exit</b>"
             ),
             complete_in_thread=True,
         )
@@ -388,6 +423,41 @@ class WormShell:
                 self.renderer.render_narration(result.narration)
             else:
                 self.renderer.render_narration("Replicacion abortada. Permanezco en mi ubicacion actual.")
+
+        elif cmd == "encrypt":
+            if not args:
+                self.renderer.render_error("Uso: encrypt <nombre_archivo>")
+                return
+            plan = self.engine.plan_encrypt(args[0])
+            self.renderer.render_narration(plan.narration)
+            if not plan.success:
+                return
+            answer = self.renderer.render_permission_prompt(plan.permission_prompt)
+            if answer.lower() in ("s", "si", "sí", "y", "yes"):
+                result = self.engine.run_encrypt(args[0])
+                if result.success:
+                    self.renderer.render_encrypt_key(result.data["name"], result.data["key"])
+                self.renderer.render_narration(result.narration)
+            else:
+                self.renderer.render_narration("Encriptacion cancelada. El archivo permanece intacto.")
+
+        elif cmd == "decrypt":
+            if not args:
+                self.renderer.render_error("Uso: decrypt <nombre_archivo>")
+                return
+            plan = self.engine.plan_decrypt(args[0])
+            self.renderer.render_narration(plan.narration)
+            if not plan.success:
+                return
+            key = self.renderer.render_key_input_prompt(args[0])
+            if not key:
+                self.renderer.render_narration("No se introdujo ninguna clave. Operacion cancelada.")
+                return
+            result = self.engine.run_decrypt(args[0], key)
+            if not result.success:
+                self.renderer.render_error(result.narration)
+            else:
+                self.renderer.render_narration(result.narration)
 
         elif cmd == "help":
             self.renderer.render_help()
